@@ -181,6 +181,19 @@ end
 -- stacks: target passive id -> { source passive id, ... }; own_off: passive id -> true: its own modifiers left out
 -- (only the stacked ones; none: the passive does nothing). Adds to / changes `changes` (from M.diff) in place.
 local PASSIVE = 0x63CE0FEB
+-- A modifier's last word is presentation-only: its localized description id.
+-- Native passives already use zero here for effects that have no separate text.
+-- Keep one passive's normal description list when stacking. Concatenating every
+-- source's descriptions also grows the armory/loadout/warbond preview's list
+-- (issue #66); gameplay still needs all the ids, operations, values and stats.
+local function without_descriptions(mods)
+    if #mods == 0 then return mods end
+    local hidden = ffi.new('uint8_t[?]', #mods)
+    ffi.copy(hidden, mods, #mods)
+    for o = 12, #mods - 1, 16 do ffi.cast('uint32_t *', hidden + o)[0] = 0 end
+    return ffi.string(hidden, #mods)
+end
+
 function M.stack(changes, stacks, log, own_off)
     log, stacks, own_off = log or function() end, stacks or {}, own_off or {}
     local any = next(own_off) ~= nil
@@ -222,10 +235,15 @@ function M.stack(changes, stacks, log, own_off)
         local id = h.type == PASSIVE and h.size >= 56 and u32(p, P)
         local own, list = id and blocks[id], id and stacks[id]
         local mods, stats, names = own and own.mods, own and own.stats, {}
+        local described = own and not own_off[id]
         if own and own_off[id] then mods, stats = '', '' end
         for _, s in ipairs(own and list or {}) do
             if s ~= id and blocks[s] then
-                mods, stats = mods .. blocks[s].mods, stats .. blocks[s].stats
+                -- With Own effects off, describe the first actual source; the
+                -- remaining sources still apply but add no menu description.
+                mods = mods .. (described and without_descriptions(blocks[s].mods) or blocks[s].mods)
+                stats = stats .. blocks[s].stats
+                described = true
                 names[#names + 1] = tostring(s)
             elseif s ~= id then
                 log('passive ' .. s .. ' (stacked on ' .. id .. ') is not in this game\'s file: left out')
@@ -247,6 +265,7 @@ function M.stack(changes, stacks, log, own_off)
             log(string.format('passive %d: %s, stacked %s (%d modifiers, %d weapon stat modifiers)', id,
                 own_off[id] and 'own effects off' or 'own effects on', #names > 0 and table.concat(names, ', ') or 'none',
                 mc, sc))
+            if #names > 0 then log('passive ' .. id .. ': menu descriptions retained from one passive; added effects kept') end
             done = done + 1
         else
             out[#out + 1] = ffi.string(p + h.at, block_end - h.at)
